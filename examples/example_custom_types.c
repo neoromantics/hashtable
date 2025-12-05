@@ -36,18 +36,6 @@ int compare_employee(const void *key1, const void *key2, void *user_data) {
   return (e1->id == e2->id) && (strcmp(e1->department, e2->department) == 0);
 }
 
-// --- Free Function for Employee* (Key) ---
-void free_employee(void *key, void *user_data) {
-  (void)user_data;
-  free(key);
-}
-
-// --- Free Function for PersonalInfo* (Value) ---
-void free_personal_info(void *value, void *user_data) {
-  (void)user_data;
-  free(value);
-}
-
 // --- Define Hash Table Type ---
 // Mapping Employee* -> PersonalInfo*
 HT_DEFINE(emp_ht, Employee *, PersonalInfo *)
@@ -76,8 +64,9 @@ int main() {
   printf("Creating Employee Hash Table...\n");
 
   // Create the hash table with custom functions
-  emp_ht_t *ht = emp_ht_create(hash_employee, compare_employee, free_employee,
-                               free_personal_info, NULL, NULL);
+  // Use ht_free for standard free() behavior
+  emp_ht_t *ht = emp_ht_create(hash_employee, compare_employee, ht_free,
+                               ht_free, NULL, NULL);
 
   if (!ht) {
     fprintf(stderr, "Failed to create hash table.\n");

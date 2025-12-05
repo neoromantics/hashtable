@@ -92,6 +92,7 @@ The library provides several built-in hash and comparison functions for convenie
 *   `ht_hash_string` / `ht_compare_string`: For null-terminated C strings.
 *   `ht_hash_int` / `ht_compare_int`: For integer keys (cast to `void*`).
 *   `ht_hash_ptr` / `ht_compare_ptr`: For pointer identity (address) hashing.
+*   `ht_free`: Generic wrapper for `free()`, useful for keys/values that are standard malloc'd pointers.
 
 **Default Behavior**: If you pass `NULL` for the hash and compare functions in `create`, the library defaults to **pointer identity hashing** (`ht_hash_ptr`), which is useful for generic pointer keys.
 
@@ -112,12 +113,8 @@ The `create` function accepts optional callbacks for freeing keys and values. Th
 *   `value_copy`: Called when retrieving a value (optional, supports deep copy on retrieval).
 
 ```c
-void my_key_free(void *key, void *user_data) {
-    free(key);
-}
-
 // Usage:
-// str_map_create(..., my_key_free, ...);
+// str_map_create(..., ht_free, ...);
 ```
 
 ### Concurrency

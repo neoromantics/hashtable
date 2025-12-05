@@ -110,6 +110,17 @@ static inline void ht_free_string(void *ptr, void *user_data) {
 }
 
 /**
+ * @brief Generic free function (wrapper around standard free).
+ * Useful for keys/values that are simple malloc'd pointers.
+ * @param ptr Pointer to free.
+ * @param user_data User data (unused).
+ */
+static inline void ht_free(void *ptr, void *user_data) {
+  (void)user_data;
+  free(ptr);
+}
+
+/**
  * @brief Hash function for integers (cast to void*).
  */
 static inline uint32_t ht_hash_int(const void *key, void *user_data) {
