@@ -43,9 +43,8 @@ static char *ht_strdup_copy(const char *s, void *user_data) {
 void test_string_hashtable() {
   printf("Running test_string_hashtable... ");
 
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   char *key1 = ht_strdup("key1");
@@ -133,9 +132,8 @@ void *thread_func(void *arg) {
 void test_thread_safety() {
   printf("Running test_thread_safety... ");
 
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   pthread_t threads[10];
@@ -163,9 +161,8 @@ void test_edge_cases() {
   printf("Running test_edge_cases... ");
 
   // Test with collisions
-  str_ht_t *ht =
-      str_ht_create(collision_hash, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(collision_hash, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   char *key1 = ht_strdup("key1");
@@ -187,15 +184,15 @@ void test_edge_cases() {
   str_ht_destroy(ht);
 
   // Test deleting non-existent key
-  ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                     ht_free_string, ht_strdup_copy, NULL);
+  ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free, ht_free,
+                     ht_strdup_copy, NULL);
   assert(ht != NULL);
   str_ht_delete(ht, "non-existent-key");
   str_ht_destroy(ht);
 
   // Test setting NULL key
-  ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                     ht_free_string, ht_strdup_copy, NULL);
+  ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free, ht_free,
+                     ht_strdup_copy, NULL);
   assert(ht != NULL);
   // This will likely crash if not handled, which is ok for a test
   // str_ht_set(ht, NULL, "value");
@@ -239,9 +236,8 @@ void *high_contention_thread_func(void *arg) {
 void test_high_contention() {
   printf("Running test_high_contention... ");
 
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   pthread_t threads[NUM_THREADS];
@@ -260,9 +256,8 @@ void test_high_contention() {
 void test_rapid_resize() {
   printf("Running test_rapid_resize... ");
 
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   // Insert many items to trigger resizing
@@ -289,9 +284,8 @@ void test_rapid_resize() {
 
 void test_clear() {
   printf("Running test_clear... ");
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   for (int i = 0; i < 100; i++) {
@@ -319,9 +313,8 @@ void test_clear() {
 
 void test_reserve() {
   printf("Running test_reserve... ");
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   assert(str_ht_reserve(ht, 1000) == HT_SUCCESS);
@@ -341,9 +334,8 @@ void test_reserve() {
 
 void test_iterator() {
   printf("Running test_iterator... ");
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   int count = 10;
@@ -371,9 +363,8 @@ void test_iterator() {
 
 void test_massive() {
   printf("Running test_massive (1M items)... ");
-  str_ht_t *ht =
-      str_ht_create(ht_hash_string, ht_compare_string, ht_free_string,
-                    ht_free_string, ht_strdup_copy, NULL);
+  str_ht_t *ht = str_ht_create(ht_hash_string, ht_compare_string, ht_free,
+                               ht_free, ht_strdup_copy, NULL);
   assert(ht != NULL);
 
   int count = 1000000;
@@ -389,7 +380,7 @@ void test_massive() {
     // Note: we are duplicating "v" 1M times, which is fine, but let's be
     // careful with memory. Actually, let's just use a static string for value
     // to save memory if we didn't have free_value. But we have free_value set
-    // to ht_free_string. So we must malloc. 1M * (malloc overhead + string)
+    // to ht_free. So we must malloc. 1M * (malloc overhead + string)
     // might be heavy. "v" is small.
     assert(str_ht_set(ht, k, v) == HT_SUCCESS);
   }
