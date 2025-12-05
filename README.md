@@ -14,6 +14,24 @@ To use this library, include `hashtable.h` in your source files. In exactly one 
 #include "hashtable.h"
 ```
 
+## Building and Testing
+
+The project includes a `Makefile` for building tests and examples.
+
+```bash
+# Build everything
+make
+
+# Run tests
+make test
+
+# Run benchmark
+make bench
+
+# Run custom types example
+make example_custom_types && ./example_custom_types
+```
+
 ## Design Philosophy
 
 This library uses C preprocessor macros to define type-specific hash table structures and functions. This approach allows for:
@@ -67,157 +85,23 @@ int main(void) {
 }
 ```
 
+## Built-in Hash Functions
+
+The library provides several built-in hash and comparison functions for convenience:
+
+*   `ht_hash_string` / `ht_compare_string`: For null-terminated C strings.
+*   `ht_hash_int` / `ht_compare_int`: For integer keys (cast to `void*`).
+*   `ht_hash_ptr` / `ht_compare_ptr`: For pointer identity (address) hashing.
+
+**Default Behavior**: If you pass `NULL` for the hash and compare functions in `create`, the library defaults to **pointer identity hashing** (`ht_hash_ptr`), which is useful for generic pointer keys.
+
 ## Advanced Usage
 
 ### Custom Types
 
-To use custom structures as keys, you must provide hash and comparison functions. It is recommended to use pointers to structures as keys (`Struct*`) rather than the structures themselves (`Struct`) to avoid copying overhead and to ensure compatibility with the internal `void*` storage.
+To use custom structures as keys, you must provide hash and comparison functions. It is recommended to use pointers to structures as keys (`Struct*`) rather than the structures themselves (`Struct`) to avoid copying overhead.
 
-The following is a complete, compilable example of using a custom `Point` struct as a key.
-
-```c
-#define HT_IMPLEMENTATION
-#include "hashtable.h"
-#include <stdio.h>
-
-typedef struct {
-    int x, y;
-} Point;
-
-// Hash function for Point*
-uint32_t hash_point(const void *key, void *user_data) {
-    const Point *p = (const Point *)key;
-    // Simple hash combination
-    return (uint32_t)((p->x * 31) ^ p->y);
-}
-
-// Compare function for Point*
-int compare_point(const void *key1, const void *key2, void *user_data) {
-    const Point *p1 = (const Point *)key1;
-    const Point *p2 = (const Point *)key2;
-    return (p1->x == p2->x) && (p1->y == p2->y);
-}
-
-// Define table mapping Point* -> int
-HT_DEFINE(point_map, Point*, int)
-HT_IMPLEMENT(point_map, Point*, int)
-
-int main(void) {
-    // Create the hash table
-    point_map_t *map = point_map_create(hash_point, compare_point, NULL, NULL, NULL, NULL);
-
-    if (!map) {
-        fprintf(stderr, "Failed to create hash table\n");
-        return 1;
-    }
-
-    // Create some points
-    Point p1 = {1, 2};
-    Point p2 = {3, 4};
-    Point p3 = {5, 6};
-
-    // Insert using pointers to the points
-    point_map_set(map, &p1, 100);
-    point_map_set(map, &p2, 200);
-
-    // Retrieve
-    int val = point_map_get(map, &p1);
-    printf("Point(%d, %d) -> %d\n", p1.x, p1.y, val);
-
-    // Update
-    point_map_set(map, &p1, 150);
-    printf("Point(%d, %d) updated -> %d\n", p1.x, p1.y, point_map_get(map, &p1));
-
-    // Check for non-existent key
-    if (point_map_get(map, &p3) == 0) {
-        printf("Point(%d, %d) not found\n", p3.x, p3.y);
-    }
-
-    // Cleanup
-    point_map_destroy(map);
-    return 0;
-}
-```
-
-### Complete Example: Custom Key and Custom Value
-
-This example demonstrates using a custom `Point` struct as a key and a `Person` struct as a value. It also shows how to handle memory management for dynamically allocated keys and values.
-
-```c
-#define HT_IMPLEMENTATION
-#include "hashtable.h"
-#include <stdio.h>
-#include <stdlib.h>
-#include <string.h>
-
-// --- Key Definition ---
-typedef struct {
-    int x, y;
-} Point;
-
-uint32_t hash_point(const void *key, void *user_data) {
-    const Point *p = (const Point *)key;
-    return (uint32_t)((p->x * 31) ^ p->y);
-}
-
-int compare_point(const void *key1, const void *key2, void *user_data) {
-    const Point *p1 = (const Point *)key1;
-    const Point *p2 = (const Point *)key2;
-    return (p1->x == p2->x) && (p1->y == p2->y);
-}
-
-// --- Value Definition ---
-typedef struct {
-    char name[32];
-    int age;
-} Person;
-
-// --- Memory Management Callbacks ---
-void free_key(void *key, void *user_data) {
-    free(key);
-}
-
-void free_value(void *value, void *user_data) {
-    free(value);
-}
-
-// --- Table Definition ---
-// Mapping Point* -> Person*
-HT_DEFINE(person_map, Point*, Person*)
-HT_IMPLEMENT(person_map, Point*, Person*)
-
-int main(void) {
-    // Create table with free functions
-    person_map_t *map = person_map_create(hash_point, compare_point, free_key, free_value, NULL, NULL);
-
-    // Helper to create a point
-    Point *p1 = malloc(sizeof(Point));
-    p1->x = 10; p1->y = 20;
-
-    // Helper to create a person
-    Person *person1 = malloc(sizeof(Person));
-    strcpy(person1->name, "Alice");
-    person1->age = 30;
-
-    // Insert
-    // The table now owns the memory for p1 and person1
-    person_map_set(map, p1, person1);
-
-    // Retrieve
-    // We need a temporary key for lookup (stack allocated is fine)
-    Point lookup_key = {10, 20};
-    Person *retrieved = person_map_get(map, &lookup_key);
-
-    if (retrieved) {
-        printf("Found: %s, Age: %d\n", retrieved->name, retrieved->age);
-    }
-
-    // Cleanup
-    // This will automatically call free_key(p1) and free_value(person1)
-    person_map_destroy(map);
-    return 0;
-}
-```
+See `examples/example_custom_types.c` for a complete, compilable example of using custom structs for both keys and values, including memory management.
 
 ### Memory Management
 
@@ -250,7 +134,7 @@ The macros `HT_DEFINE(name, key_type, value_type)` and `HT_IMPLEMENT(name, key_t
 
 | Function | Description |
 | :--- | :--- |
-| `name##_create` | Allocates and initializes a new hash table. |
+| `name##_create` | Allocates and initializes a new hash table. Defaults to identity hash if funcs are NULL. |
 | `name##_destroy` | Frees the hash table and all its entries. |
 | `name##_set` | Inserts or updates a key-value pair. Returns `HT_SUCCESS` or `HT_ERROR_MEMORY`. |
 | `name##_get` | Retrieves the value associated with a key. Returns zero-value/NULL if not found. |

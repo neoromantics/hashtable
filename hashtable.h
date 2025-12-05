@@ -1,6 +1,61 @@
 /**
  * @file hashtable.h
  * @brief A generic, header-only hash table implementation in C.
+ *
+ * # Architecture & Design
+ *
+ * ## 1. Open Addressing with Linear Probing
+ * This hash table uses **Open Addressing** for collision resolution,
+ * specifically **Linear Probing**.
+ * - **Open Addressing**: All elements are stored directly in the `entries`
+ * array. There are no linked lists or external nodes.
+ * - **Linear Probing**: When a collision occurs (two keys hash to the same
+ * index), the algorithm checks the next slot (index + 1), wrapping around if
+ * necessary, until an empty slot is found.
+ *
+ * ## 2. Memory Layout
+ * The table consists of a single contiguous array of `entry_t` structs.
+ * Each entry contains:
+ * - `key`: The key (type defined by user).
+ * - `value`: The value (type defined by user).
+ * - `state`: The state of the slot (EMPTY, OCCUPIED, or DELETED).
+ *
+ * This layout improves cache locality compared to chaining (linked lists)
+ * because accessing the next probe location involves reading the next memory
+ * address, which is likely already in the CPU cache.
+ *
+ * ## 3. Tombstones (Lazy Deletion)
+ * Deletions are handled using "tombstones" (lazy deletion).
+ * - When an item is deleted, its slot state is marked as `HT_SLOT_DELETED`
+ * instead of `HT_SLOT_EMPTY`.
+ * - **Search**: The search algorithm continues past `HT_SLOT_DELETED` slots,
+ * ensuring that items placed *after* the deleted item (due to probing) can
+ * still be found.
+ * - **Insertion**: New items can overwrite `HT_SLOT_DELETED` slots, reclaiming
+ * the space.
+ * - **Cleanup**: Tombstones are permanently removed during a resize (rehash)
+ * operation.
+ *
+ * ## 4. Thread Safety
+ * Thread safety is achieved using a `pthread_rwlock_t` (Read-Write Lock).
+ * - **Readers**: Multiple threads can read (`get`) simultaneously.
+ * - **Writers**: Only one thread can write (`set`, `delete`, `clear`,
+ * `reserve`) at a time.
+ * - **Granularity**: The lock covers the entire table. This is simple and
+ * effective for read-heavy workloads but may be a bottleneck for write-heavy
+ * concurrent scenarios.
+ *
+ * ## 5. Type Safety via Macros
+ * The library uses C preprocessor macros (`HT_DEFINE`, `HT_IMPLEMENT`) to
+ * generate type-safe code for specific key/value pairs.
+ * - `HT_DEFINE(name, key_type, value_type)`: Defines the structs and function
+ * prototypes.
+ * - `HT_IMPLEMENT(name, key_type, value_type)`: Generates the actual function
+ * implementations.
+ *
+ * ## 6. Hashing
+ * The default hash function for strings uses **MurmurHash3**, a fast,
+ * non-cryptographic hash function with excellent distribution properties.
  */
 
 #ifndef HASHTABLE_H
@@ -54,17 +109,74 @@ static inline void ht_free_string(void *ptr, void *user_data) {
   free(ptr);
 }
 
+/**
+ * @brief Hash function for integers (cast to void*).
+ */
+static inline uint32_t ht_hash_int(const void *key, void *user_data) {
+  (void)user_data;
+  uint32_t v = (uint32_t)(uintptr_t)key;
+  return murmur3_32((const uint8_t *)&v, sizeof(uint32_t), 0);
+}
+
+/**
+ * @brief Compare function for integers (cast to void*).
+ */
+static inline int ht_compare_int(const void *key1, const void *key2,
+                                 void *user_data) {
+  (void)user_data;
+  return (int)(uintptr_t)key1 == (int)(uintptr_t)key2;
+}
+
+/**
+ * @brief Hash function for pointers (identity hash).
+ * Hashes the address itself.
+ */
+static inline uint32_t ht_hash_ptr(const void *key, void *user_data) {
+  (void)user_data;
+  return murmur3_32((const uint8_t *)&key, sizeof(void *), 0);
+}
+
+/**
+ * @brief Compare function for pointers (identity comparison).
+ */
+static inline int ht_compare_ptr(const void *key1, const void *key2,
+                                 void *user_data) {
+  (void)user_data;
+  return key1 == key2;
+}
+
+/**
+ * @brief State of a slot in the hash table.
+ * - EMPTY: Slot is free and has never been used (stops search).
+ * - OCCUPIED: Slot contains a valid key-value pair.
+ * - DELETED: Slot was used but is now free (tombstone; does not stop search).
+ */
+typedef enum {
+  HT_SLOT_EMPTY = 0,
+  HT_SLOT_OCCUPIED,
+  HT_SLOT_DELETED
+} ht_slot_state;
+
+/**
+ * @brief Macro to define a type-safe hash table.
+ *
+ * @param name The prefix for the generated types and functions (e.g., `my_ht`
+ * -> `my_ht_t`, `my_ht_create`).
+ * @param key_type The type of the keys (e.g., `int`, `char*`, `MyStruct*`).
+ * @param value_type The type of the values (e.g., `int`, `MyData*`).
+ */
 #define HT_DEFINE(name, key_type, value_type)                                  \
-  typedef struct name##_entry {                                                \
+  typedef struct {                                                             \
     key_type key;                                                              \
     value_type value;                                                          \
-    struct name##_entry *next;                                                 \
+    ht_slot_state state;                                                       \
   } name##_entry_t;                                                            \
                                                                                \
   typedef struct name {                                                        \
-    name##_entry_t **entries;                                                  \
+    name##_entry_t *entries;                                                   \
     size_t capacity;                                                           \
     size_t size;                                                               \
+    size_t deleted_count;                                                      \
     pthread_rwlock_t rwlock;                                                   \
     uint32_t (*hash)(const void *key, void *user_data);                        \
     int (*compare)(const void *key1, const void *key2, void *user_data);       \
@@ -140,10 +252,22 @@ static inline void ht_free_string(void *ptr, void *user_data) {
   typedef struct name##_iter {                                                 \
     name##_t *ht;                                                              \
     size_t index;                                                              \
-    name##_entry_t *entry;                                                     \
   } name##_iter_t;                                                             \
                                                                                \
+  /**                                                                          \
+   * @brief Creates an iterator for the hash table.                            \
+   * @param ht The hash table.                                                 \
+   * @return The iterator.                                                     \
+   */                                                                          \
   name##_iter_t name##_iter_create(name##_t *ht);                              \
+                                                                               \
+  /**                                                                          \
+   * @brief Advances the iterator to the next item.                            \
+   * @param iter The iterator.                                                 \
+   * @param key Pointer to store the key (optional).                           \
+   * @param value Pointer to store the value (optional).                       \
+   * @return 1 if valid item found, 0 if end of table.                         \
+   */                                                                          \
   int name##_iter_next(name##_iter_t *iter, key_type *key, value_type *value);
 
 #ifdef HT_IMPLEMENTATION
@@ -161,14 +285,14 @@ static inline void ht_free_string(void *ptr, void *user_data) {
       return NULL;                                                             \
     ht->capacity = 16;                                                         \
     ht->entries =                                                              \
-        (name##_entry_t **)calloc(ht->capacity, sizeof(name##_entry_t *));     \
+        (name##_entry_t *)calloc(ht->capacity, sizeof(name##_entry_t));        \
     if (!ht->entries) {                                                        \
       free(ht);                                                                \
       return NULL;                                                             \
     }                                                                          \
     pthread_rwlock_init(&ht->rwlock, NULL);                                    \
-    ht->hash = hash;                                                           \
-    ht->compare = compare;                                                     \
+    ht->hash = hash ? hash : ht_hash_ptr;                                      \
+    ht->compare = compare ? compare : ht_compare_ptr;                          \
     ht->key_free = key_free;                                                   \
     ht->value_free = value_free;                                               \
     ht->value_copy = value_copy;                                               \
@@ -179,15 +303,12 @@ static inline void ht_free_string(void *ptr, void *user_data) {
   void name##_destroy(name##_t *ht) {                                          \
     pthread_rwlock_wrlock(&ht->rwlock);                                        \
     for (size_t i = 0; i < ht->capacity; i++) {                                \
-      name##_entry_t *entry = ht->entries[i];                                  \
-      while (entry) {                                                          \
-        name##_entry_t *next = entry->next;                                    \
+      if (ht->entries[i].state == HT_SLOT_OCCUPIED) {                          \
         if (ht->key_free)                                                      \
-          ht->key_free((void *)(uintptr_t)entry->key, ht->user_data);          \
+          ht->key_free((void *)(uintptr_t)ht->entries[i].key, ht->user_data);  \
         if (ht->value_free)                                                    \
-          ht->value_free((void *)(uintptr_t)entry->value, ht->user_data);      \
-        free(entry);                                                           \
-        entry = next;                                                          \
+          ht->value_free((void *)(uintptr_t)ht->entries[i].value,              \
+                         ht->user_data);                                       \
       }                                                                        \
     }                                                                          \
     free(ht->entries);                                                         \
@@ -196,62 +317,76 @@ static inline void ht_free_string(void *ptr, void *user_data) {
     free(ht);                                                                  \
   }                                                                            \
                                                                                \
-  static ht_status name##_resize(name##_t *ht) {                               \
-    size_t new_capacity = ht->capacity * 2;                                    \
-    name##_entry_t **new_entries =                                             \
-        (name##_entry_t **)calloc(new_capacity, sizeof(name##_entry_t *));     \
+  static ht_status name##_resize(name##_t *ht, size_t new_capacity) {          \
+    name##_entry_t *old_entries = ht->entries;                                 \
+    size_t old_capacity = ht->capacity;                                        \
+                                                                               \
+    name##_entry_t *new_entries =                                              \
+        (name##_entry_t *)calloc(new_capacity, sizeof(name##_entry_t));        \
     if (!new_entries)                                                          \
       return HT_ERROR_MEMORY;                                                  \
                                                                                \
-    for (size_t i = 0; i < ht->capacity; i++) {                                \
-      name##_entry_t *entry = ht->entries[i];                                  \
-      while (entry) {                                                          \
-        name##_entry_t *next = entry->next;                                    \
-        size_t new_index = ht->hash(entry->key, ht->user_data) % new_capacity; \
-        entry->next = new_entries[new_index];                                  \
-        new_entries[new_index] = entry;                                        \
-        entry = next;                                                          \
+    ht->entries = new_entries;                                                 \
+    ht->capacity = new_capacity;                                               \
+    ht->size = 0; /* Reset size, will be re-counted during rehash */           \
+    ht->deleted_count = 0;                                                     \
+                                                                               \
+    for (size_t i = 0; i < old_capacity; i++) {                                \
+      if (old_entries[i].state == HT_SLOT_OCCUPIED) {                          \
+        size_t index =                                                         \
+            ht->hash(old_entries[i].key, ht->user_data) % new_capacity;        \
+        while (ht->entries[index].state == HT_SLOT_OCCUPIED) {                 \
+          index = (index + 1) % new_capacity;                                  \
+        }                                                                      \
+        ht->entries[index] = old_entries[i];                                   \
+        ht->entries[index].state = HT_SLOT_OCCUPIED; /* Ensure state is set */ \
+        ht->size++;                                                            \
       }                                                                        \
     }                                                                          \
                                                                                \
-    free(ht->entries);                                                         \
-    ht->entries = new_entries;                                                 \
-    ht->capacity = new_capacity;                                               \
+    free(old_entries);                                                         \
     return HT_SUCCESS;                                                         \
   }                                                                            \
                                                                                \
   ht_status name##_set(name##_t *ht, key_type key, value_type value) {         \
     pthread_rwlock_wrlock(&ht->rwlock);                                        \
-    if ((float)ht->size / ht->capacity > 0.75) {                               \
-      if (name##_resize(ht) != HT_SUCCESS) {                                   \
+    /* Resize if load factor is too high or too many deleted slots */          \
+    if ((float)(ht->size + ht->deleted_count) / ht->capacity > 0.75 ||         \
+        ht->deleted_count > ht->size / 2) {                                    \
+      if (name##_resize(ht, ht->capacity * 2) != HT_SUCCESS) {                 \
         pthread_rwlock_unlock(&ht->rwlock);                                    \
         return HT_ERROR_MEMORY;                                                \
       }                                                                        \
     }                                                                          \
                                                                                \
     size_t index = ht->hash(key, ht->user_data) % ht->capacity;                \
-    name##_entry_t *entry = ht->entries[index];                                \
+    size_t first_deleted = (size_t)-1;                                         \
                                                                                \
-    while (entry) {                                                            \
-      if (ht->compare(entry->key, key, ht->user_data)) {                       \
-        if (ht->value_free)                                                    \
-          ht->value_free((void *)(uintptr_t)entry->value, ht->user_data);      \
-        entry->value = value;                                                  \
-        pthread_rwlock_unlock(&ht->rwlock);                                    \
-        return HT_SUCCESS;                                                     \
+    while (ht->entries[index].state != HT_SLOT_EMPTY) {                        \
+      if (ht->entries[index].state == HT_SLOT_OCCUPIED) {                      \
+        if (ht->compare(ht->entries[index].key, key, ht->user_data)) {         \
+          if (ht->value_free)                                                  \
+            ht->value_free((void *)(uintptr_t)ht->entries[index].value,        \
+                           ht->user_data);                                     \
+          ht->entries[index].value = value;                                    \
+          pthread_rwlock_unlock(&ht->rwlock);                                  \
+          return HT_SUCCESS;                                                   \
+        }                                                                      \
+      } else if (first_deleted == (size_t)-1) { /* HT_SLOT_DELETED */          \
+        first_deleted = index;                                                 \
       }                                                                        \
-      entry = entry->next;                                                     \
+      index = (index + 1) % ht->capacity;                                      \
     }                                                                          \
                                                                                \
-    entry = (name##_entry_t *)malloc(sizeof(name##_entry_t));                  \
-    if (!entry) {                                                              \
-      pthread_rwlock_unlock(&ht->rwlock);                                      \
-      return HT_ERROR_MEMORY;                                                  \
+    /* If a deleted slot was found, use it */                                  \
+    if (first_deleted != (size_t)-1) {                                         \
+      index = first_deleted;                                                   \
+      ht->deleted_count--;                                                     \
     }                                                                          \
-    entry->key = key;                                                          \
-    entry->value = value;                                                      \
-    entry->next = ht->entries[index];                                          \
-    ht->entries[index] = entry;                                                \
+                                                                               \
+    ht->entries[index].key = key;                                              \
+    ht->entries[index].value = value;                                          \
+    ht->entries[index].state = HT_SLOT_OCCUPIED;                               \
     ht->size++;                                                                \
     pthread_rwlock_unlock(&ht->rwlock);                                        \
     return HT_SUCCESS;                                                         \
@@ -260,17 +395,19 @@ static inline void ht_free_string(void *ptr, void *user_data) {
   value_type name##_get(name##_t *ht, key_type key) {                          \
     pthread_rwlock_rdlock(&ht->rwlock);                                        \
     size_t index = ht->hash(key, ht->user_data) % ht->capacity;                \
-    name##_entry_t *entry = ht->entries[index];                                \
                                                                                \
-    while (entry) {                                                            \
-      if (ht->compare(entry->key, key, ht->user_data)) {                       \
-        value_type val = ht->value_copy                                        \
-                             ? ht->value_copy(entry->value, ht->user_data)     \
-                             : entry->value;                                   \
-        pthread_rwlock_unlock(&ht->rwlock);                                    \
-        return val;                                                            \
+    while (ht->entries[index].state != HT_SLOT_EMPTY) {                        \
+      if (ht->entries[index].state == HT_SLOT_OCCUPIED) {                      \
+        if (ht->compare(ht->entries[index].key, key, ht->user_data)) {         \
+          value_type val =                                                     \
+              ht->value_copy                                                   \
+                  ? ht->value_copy(ht->entries[index].value, ht->user_data)    \
+                  : ht->entries[index].value;                                  \
+          pthread_rwlock_unlock(&ht->rwlock);                                  \
+          return val;                                                          \
+        }                                                                      \
       }                                                                        \
-      entry = entry->next;                                                     \
+      index = (index + 1) % ht->capacity;                                      \
     }                                                                          \
                                                                                \
     pthread_rwlock_unlock(&ht->rwlock);                                        \
@@ -280,27 +417,24 @@ static inline void ht_free_string(void *ptr, void *user_data) {
   int name##_delete(name##_t *ht, key_type key) {                              \
     pthread_rwlock_wrlock(&ht->rwlock);                                        \
     size_t index = ht->hash(key, ht->user_data) % ht->capacity;                \
-    name##_entry_t *entry = ht->entries[index];                                \
-    name##_entry_t *prev = NULL;                                               \
                                                                                \
-    while (entry) {                                                            \
-      if (ht->compare(entry->key, key, ht->user_data)) {                       \
-        if (prev) {                                                            \
-          prev->next = entry->next;                                            \
-        } else {                                                               \
-          ht->entries[index] = entry->next;                                    \
+    while (ht->entries[index].state != HT_SLOT_EMPTY) {                        \
+      if (ht->entries[index].state == HT_SLOT_OCCUPIED) {                      \
+        if (ht->compare(ht->entries[index].key, key, ht->user_data)) {         \
+          if (ht->key_free)                                                    \
+            ht->key_free((void *)(uintptr_t)ht->entries[index].key,            \
+                         ht->user_data);                                       \
+          if (ht->value_free)                                                  \
+            ht->value_free((void *)(uintptr_t)ht->entries[index].value,        \
+                           ht->user_data);                                     \
+          ht->entries[index].state = HT_SLOT_DELETED;                          \
+          ht->size--;                                                          \
+          ht->deleted_count++;                                                 \
+          pthread_rwlock_unlock(&ht->rwlock);                                  \
+          return 1;                                                            \
         }                                                                      \
-        if (ht->key_free)                                                      \
-          ht->key_free((void *)(uintptr_t)entry->key, ht->user_data);          \
-        if (ht->value_free)                                                    \
-          ht->value_free((void *)(uintptr_t)entry->value, ht->user_data);      \
-        free(entry);                                                           \
-        ht->size--;                                                            \
-        pthread_rwlock_unlock(&ht->rwlock);                                    \
-        return 1;                                                              \
       }                                                                        \
-      prev = entry;                                                            \
-      entry = entry->next;                                                     \
+      index = (index + 1) % ht->capacity;                                      \
     }                                                                          \
     pthread_rwlock_unlock(&ht->rwlock);                                        \
     return 0;                                                                  \
@@ -309,19 +443,17 @@ static inline void ht_free_string(void *ptr, void *user_data) {
   void name##_clear(name##_t *ht) {                                            \
     pthread_rwlock_wrlock(&ht->rwlock);                                        \
     for (size_t i = 0; i < ht->capacity; i++) {                                \
-      name##_entry_t *entry = ht->entries[i];                                  \
-      while (entry) {                                                          \
-        name##_entry_t *next = entry->next;                                    \
+      if (ht->entries[i].state == HT_SLOT_OCCUPIED) {                          \
         if (ht->key_free)                                                      \
-          ht->key_free((void *)(uintptr_t)entry->key, ht->user_data);          \
+          ht->key_free((void *)(uintptr_t)ht->entries[i].key, ht->user_data);  \
         if (ht->value_free)                                                    \
-          ht->value_free((void *)(uintptr_t)entry->value, ht->user_data);      \
-        free(entry);                                                           \
-        entry = next;                                                          \
+          ht->value_free((void *)(uintptr_t)ht->entries[i].value,              \
+                         ht->user_data);                                       \
       }                                                                        \
-      ht->entries[i] = NULL;                                                   \
+      ht->entries[i].state = HT_SLOT_EMPTY;                                    \
     }                                                                          \
     ht->size = 0;                                                              \
+    ht->deleted_count = 0;                                                     \
     pthread_rwlock_unlock(&ht->rwlock);                                        \
   }                                                                            \
                                                                                \
@@ -331,64 +463,39 @@ static inline void ht_free_string(void *ptr, void *user_data) {
       pthread_rwlock_unlock(&ht->rwlock);                                      \
       return HT_SUCCESS;                                                       \
     }                                                                          \
-    /* Resize logic duplicated/adapted from resize */                          \
-    size_t new_capacity = capacity;                                            \
-    /* Ensure power of 2 or just use as is? Let's just use as is for now, or   \
-     * round up */                                                             \
-    /* Simple implementation: just realloc entries array and rehash */         \
-    name##_entry_t **new_entries =                                             \
-        (name##_entry_t **)calloc(new_capacity, sizeof(name##_entry_t *));     \
-    if (!new_entries) {                                                        \
-      pthread_rwlock_unlock(&ht->rwlock);                                      \
-      return HT_ERROR_MEMORY;                                                  \
+    /* Ensure new capacity is at least current size + deleted_count to avoid   \
+     * immediate rehash */                                                     \
+    if (capacity < ht->size + ht->deleted_count) {                             \
+      capacity = ht->size + ht->deleted_count;                                 \
     }                                                                          \
-                                                                               \
-    for (size_t i = 0; i < ht->capacity; i++) {                                \
-      name##_entry_t *entry = ht->entries[i];                                  \
-      while (entry) {                                                          \
-        name##_entry_t *next = entry->next;                                    \
-        size_t new_index = ht->hash(entry->key, ht->user_data) % new_capacity; \
-        entry->next = new_entries[new_index];                                  \
-        new_entries[new_index] = entry;                                        \
-        entry = next;                                                          \
-      }                                                                        \
-    }                                                                          \
-                                                                               \
-    free(ht->entries);                                                         \
-    ht->entries = new_entries;                                                 \
-    ht->capacity = new_capacity;                                               \
+    /* Round up to next power of 2 for better performance, or just use as is   \
+     */                                                                        \
+    /* For simplicity, let's just use the provided capacity, but ensure it's   \
+     * large enough */                                                         \
+    ht_status status = name##_resize(ht, capacity);                            \
     pthread_rwlock_unlock(&ht->rwlock);                                        \
-    return HT_SUCCESS;                                                         \
+    return status;                                                             \
   }                                                                            \
                                                                                \
   name##_iter_t name##_iter_create(name##_t *ht) {                             \
     name##_iter_t iter;                                                        \
     iter.ht = ht;                                                              \
     iter.index = 0;                                                            \
-    iter.entry = NULL;                                                         \
-    /* We need to lock the table during iteration? */                          \
-    /* For a simple iterator, we might assume the user handles locking or we   \
-     * lock for the whole duration? */                                         \
-    /* Typically iterators are not thread-safe if the table is modified. */    \
-    /* Let's just return the iterator. The user should be careful. */          \
     return iter;                                                               \
   }                                                                            \
                                                                                \
   int name##_iter_next(name##_iter_t *iter, key_type *key,                     \
                        value_type *value) {                                    \
-    /* Find next entry */                                                      \
-    if (iter->entry) {                                                         \
-      iter->entry = iter->entry->next;                                         \
-    }                                                                          \
-    while (!iter->entry && iter->index < iter->ht->capacity) {                 \
-      iter->entry = iter->ht->entries[iter->index++];                          \
-    }                                                                          \
-    if (iter->entry) {                                                         \
-      if (key)                                                                 \
-        *key = iter->entry->key;                                               \
-      if (value)                                                               \
-        *value = iter->entry->value;                                           \
-      return 1;                                                                \
+    while (iter->index < iter->ht->capacity) {                                 \
+      if (iter->ht->entries[iter->index].state == HT_SLOT_OCCUPIED) {          \
+        if (key)                                                               \
+          *key = iter->ht->entries[iter->index].key;                           \
+        if (value)                                                             \
+          *value = iter->ht->entries[iter->index].value;                       \
+        iter->index++;                                                         \
+        return 1;                                                              \
+      }                                                                        \
+      iter->index++;                                                           \
     }                                                                          \
     return 0;                                                                  \
   }

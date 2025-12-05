@@ -1,5 +1,5 @@
 #define HT_IMPLEMENTATION
-#include "hashtable.h"
+#include "../hashtable.h"
 #include <assert.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -19,14 +19,14 @@ HT_DEFINE(str_ht, char *, char *)
 HT_IMPLEMENT(str_ht, char *, char *)
 
 // Hash function for integers
-static inline uint32_t ht_hash_int(const void *key, void *user_data) {
+static inline uint32_t test_hash_int(const void *key, void *user_data) {
   (void)user_data;
   return murmur3_32((const uint8_t *)key, sizeof(int), 0);
 }
 
 // Compare function for integers
-static inline int ht_compare_int(const void *key1, const void *key2,
-                                 void *user_data) {
+static inline int test_compare_int(const void *key1, const void *key2,
+                                   void *user_data) {
   (void)user_data;
   return *(int *)key1 == *(int *)key2;
 }
@@ -82,7 +82,7 @@ void test_int_hashtable() {
   printf("Running test_int_hashtable... ");
 
   int_ht_t *ht =
-      int_ht_create(ht_hash_int, ht_compare_int, NULL, NULL, NULL, NULL);
+      int_ht_create(test_hash_int, test_compare_int, NULL, NULL, NULL, NULL);
   assert(ht != NULL);
 
   int key1 = 1;
@@ -394,7 +394,7 @@ void test_massive() {
     assert(str_ht_set(ht, k, v) == HT_SUCCESS);
   }
 
-  assert(ht->size == count);
+  assert(ht->size == (size_t)count);
 
   // Verify a few
   char *val = str_ht_get(ht, "k0");
